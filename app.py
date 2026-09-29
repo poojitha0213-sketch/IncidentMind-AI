@@ -12,21 +12,30 @@ groq_client = Groq(
     api_key=os.getenv("GROQ_API_KEY")
 )
 
-hindsight_client = Hindsight(
-    api_key=os.getenv("HINDSIGHT_API_KEY"),
-    base_url=os.getenv("HINDSIGHT_BASE_URL")
-)
+def run_hindsight(method_name, **kwargs):
+    """Run one Hindsight async SDK call in its own event loop.
+
+    A fresh Hindsight client is created inside the same worker thread/event
+    loop as the async request. This prevents aiohttp sessions from being
+    reused across closed event loops on Streamlit Cloud.
+    """
+    def worker():
+        client = Hindsight(
+            api_key=os.getenv("HINDSIGHT_API_KEY"),
+            base_url=os.getenv("HINDSIGHT_BASE_URL")
+        )
+
+        async def execute():
+            method = getattr(client, method_name)
+            return await method(**kwargs)
+
+        return asyncio.run(execute())
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(worker)
+        return future.result()
 
 BANK_ID = os.getenv("HINDSIGHT_BANK_ID")
-
-
-# Streamlit Cloud can already have an asyncio event loop running.
-# Run Hindsight's async SDK methods in a separate thread so they do
-# not conflict with Streamlit's event loop.
-def run_hindsight(coro):
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(asyncio.run, coro)
-        return future.result()
 
 st.set_page_config(
     page_title="IncidentMind AI",
@@ -163,10 +172,9 @@ Recent Change: {recent_change}
         ):
 
             memory_result = run_hindsight(
-                hindsight_client.arecall(
-                    bank_id=BANK_ID,
-                    query=incident_query
-                )
+                "arecall",
+                bank_id=BANK_ID,
+                query=incident_query
             )
 
 
@@ -327,21 +335,20 @@ incident_analysis
         ):
 
             run_hindsight(
-                hindsight_client.aretain(
-                    bank_id=BANK_ID,
-                    content=incident_memory,
-                    context=(
+                "aretain",
+                bank_id=BANK_ID,
+                content=incident_memory,
+                context=(
                     "IncidentMind permanent "
                     "software incident record"
                 ),
-                    metadata={
-                        "source": "IncidentMind AI",
-                        "memory_type": "incident_analysis",
-                        "incident_title": incident_title,
-                        "service": service,
-                        "severity": severity
-                    }
-                )
+                metadata={
+                    "source": "IncidentMind AI",
+                    "memory_type": "incident_analysis",
+                    "incident_title": incident_title,
+                    "service": service,
+                    "severity": severity
+                }
             )
 
         st.session_state.incident_retained = True
@@ -453,21 +460,20 @@ engineer_feedback
         ):
 
             run_hindsight(
-                hindsight_client.aretain(
-                    bank_id=BANK_ID,
-                    content=feedback_memory,
-                    context=(
+                "aretain",
+                bank_id=BANK_ID,
+                content=feedback_memory,
+                context=(
                     "IncidentMind engineer feedback "
                     "and actual incident outcome"
                 ),
-                    metadata={
-                        "source": "IncidentMind AI",
-                        "memory_type": "engineer_feedback",
-                        "incident_title": incident_title,
-                        "service": service,
-                        "outcome": feedback_status
-                    }
-                )
+                metadata={
+                    "source": "IncidentMind AI",
+                    "memory_type": "engineer_feedback",
+                    "incident_title": incident_title,
+                    "service": service,
+                    "outcome": feedback_status
+                }
             )
 
         st.session_state.feedback_saved = True
@@ -533,10 +539,9 @@ Recent Change: {recent_change}
         ):
 
             memory_result = run_hindsight(
-                hindsight_client.arecall(
-                    bank_id=BANK_ID,
-                    query=incident_query
-                )
+                "arecall",
+                bank_id=BANK_ID,
+                query=incident_query
             )
 
             if memory_result.results:
@@ -932,11 +937,10 @@ st.header(
 try:
 
     history = run_hindsight(
-        hindsight_client.alist_memories(
-            bank_id=BANK_ID,
-            limit=100,
-            offset=0
-        )
+        "alist_memories",
+        bank_id=BANK_ID,
+        limit=100,
+        offset=0
     )
 
     unique_incidents = {}
@@ -948,11 +952,12 @@ try:
         metadata = memory.metadata or {}
 
         is_incident = (
-            "INCIDENTMIND INCIDENT RECORD" in memory_text
-            or (
-                metadata.get("source") == "IncidentMind AI"
-                and metadata.get("memory_type") == "incident_analysis"
-            )
+            "INCIDENTMIND INCIDENT RECORD"
+            in memory_text
+            or metadata.get("source")
+            == "IncidentMind AI"
+            and metadata.get("memory_type")
+            == "incident_analysis"
         )
 
         if not is_incident:
@@ -1038,19 +1043,21 @@ st.header(
 
 try:
 
-    stored_memories = run_hindsight(
-        hindsight_client.alist_memories(
-            bank_id=BANK_ID,
-            limit=100,
-            offset=0
-        )
-    )
+    # Use the already-loaded Incident History data instead of making
+    # another Hindsight request. This avoids a second async event-loop
+    # operation on Streamlit Cloud and keeps the learning score stable.
+    stored_memories = locals().get("history")
 
     unique_incidents = set()
 
     feedback_count = 0
 
-    for memory in stored_memories.items:
+    if stored_memories is not None:
+        memory_items = stored_memories.items
+    else:
+        memory_items = []
+
+    for memory in memory_items:
 
         memory_text = memory.text or ""
 
