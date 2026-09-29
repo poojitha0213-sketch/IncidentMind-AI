@@ -1,4 +1,6 @@
 import os
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import streamlit as st
 from dotenv import load_dotenv
 from groq import Groq
@@ -16,6 +18,15 @@ hindsight_client = Hindsight(
 )
 
 BANK_ID = os.getenv("HINDSIGHT_BANK_ID")
+
+
+# Streamlit Cloud can already have an asyncio event loop running.
+# Run Hindsight's async SDK methods in a separate thread so they do
+# not conflict with Streamlit's event loop.
+def run_hindsight(coro):
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(asyncio.run, coro)
+        return future.result()
 
 st.set_page_config(
     page_title="IncidentMind AI",
@@ -151,9 +162,11 @@ Recent Change: {recent_change}
             "🧠 Searching Hindsight for similar incidents..."
         ):
 
-            memory_result = hindsight_client.recall(
-                bank_id=BANK_ID,
-                query=incident_query
+            memory_result = run_hindsight(
+                hindsight_client.arecall(
+                    bank_id=BANK_ID,
+                    query=incident_query
+                )
             )
 
 
@@ -313,20 +326,22 @@ incident_analysis
             "💾 Permanently saving incident to Hindsight Cloud..."
         ):
 
-            hindsight_client.retain(
-                bank_id=BANK_ID,
-                content=incident_memory,
-                context=(
+            run_hindsight(
+                hindsight_client.aretain(
+                    bank_id=BANK_ID,
+                    content=incident_memory,
+                    context=(
                     "IncidentMind permanent "
                     "software incident record"
                 ),
-                metadata={
-                    "source": "IncidentMind AI",
-                    "memory_type": "incident_analysis",
-                    "incident_title": incident_title,
-                    "service": service,
-                    "severity": severity
-                }
+                    metadata={
+                        "source": "IncidentMind AI",
+                        "memory_type": "incident_analysis",
+                        "incident_title": incident_title,
+                        "service": service,
+                        "severity": severity
+                    }
+                )
             )
 
         st.session_state.incident_retained = True
@@ -437,20 +452,22 @@ engineer_feedback
             "🧠 Learning from engineer feedback..."
         ):
 
-            hindsight_client.retain(
-                bank_id=BANK_ID,
-                content=feedback_memory,
-                context=(
+            run_hindsight(
+                hindsight_client.aretain(
+                    bank_id=BANK_ID,
+                    content=feedback_memory,
+                    context=(
                     "IncidentMind engineer feedback "
                     "and actual incident outcome"
                 ),
-                metadata={
-                    "source": "IncidentMind AI",
-                    "memory_type": "engineer_feedback",
-                    "incident_title": incident_title,
-                    "service": service,
-                    "outcome": feedback_status
-                }
+                    metadata={
+                        "source": "IncidentMind AI",
+                        "memory_type": "engineer_feedback",
+                        "incident_title": incident_title,
+                        "service": service,
+                        "outcome": feedback_status
+                    }
+                )
             )
 
         st.session_state.feedback_saved = True
@@ -515,9 +532,11 @@ Recent Change: {recent_change}
             "Preparing Memory OFF and Memory ON comparison..."
         ):
 
-            memory_result = hindsight_client.recall(
-                bank_id=BANK_ID,
-                query=incident_query
+            memory_result = run_hindsight(
+                hindsight_client.arecall(
+                    bank_id=BANK_ID,
+                    query=incident_query
+                )
             )
 
             if memory_result.results:
@@ -912,10 +931,12 @@ st.header(
 
 try:
 
-    history = hindsight_client.list_memories(
-        bank_id=BANK_ID,
-        limit=100,
-        offset=0
+    history = run_hindsight(
+        hindsight_client.alist_memories(
+            bank_id=BANK_ID,
+            limit=100,
+            offset=0
+        )
     )
 
     unique_incidents = {}
@@ -927,12 +948,11 @@ try:
         metadata = memory.metadata or {}
 
         is_incident = (
-            "INCIDENTMIND INCIDENT RECORD"
-            in memory_text
-            or metadata.get("source")
-            == "IncidentMind AI"
-            and metadata.get("memory_type")
-            == "incident_analysis"
+            "INCIDENTMIND INCIDENT RECORD" in memory_text
+            or (
+                metadata.get("source") == "IncidentMind AI"
+                and metadata.get("memory_type") == "incident_analysis"
+            )
         )
 
         if not is_incident:
@@ -1018,8 +1038,8 @@ st.header(
 
 try:
 
-    stored_memories = (
-        hindsight_client.list_memories(
+    stored_memories = run_hindsight(
+        hindsight_client.alist_memories(
             bank_id=BANK_ID,
             limit=100,
             offset=0
